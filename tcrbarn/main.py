@@ -964,7 +964,7 @@ def predict(input_pair, model_of="pMHC"):
         Tensor: Predicted probability.
     """
     if model_of == "pMHC":
-        model_save_paths = {'model': "models/pMHC-final_model/best_model.pth", 'alpha_encoder': "models/combined_5fold/best_alpha_encoder.pth",
+        model_save_paths = {'model': "models/pMHC-final_model/best_model.pth", 'alpha_encoder': "models/pMHC-final_model/best_alpha_encoder.pth",
                             'beta_encoder': "models/pMHC-final_model/best_beta_encoder.pth"}
         best_param = "hyperparameters.json"
 
