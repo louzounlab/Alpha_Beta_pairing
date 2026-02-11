@@ -5,6 +5,7 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score
+from Bio.SeqUtils.ProtParam import ProteinAnalysis
 
 def encoder_loss_function(acid2int, recon_x, x, mean, log_var):
     """
@@ -58,7 +59,7 @@ def save_plot_with_incremental_filename(base_folder, filename):
         counter += 1
 
 
-def pass_models(alpha, beta, alpha_model, beta_model, va, vb, ja, jb, DEVICE, stage1_output):
+def pass_models(alpha, beta, model_type, alpha_model, beta_model, va, vb, ja, jb, DEVICE, stage1_output):
     """
     Pass the inputs through the models and concatenate the outputs.
     Args:
@@ -81,14 +82,21 @@ def pass_models(alpha, beta, alpha_model, beta_model, va, vb, ja, jb, DEVICE, st
     beta = beta.to(DEVICE)
     if stage1_output is not None and any(o is not None for o in stage1_output):
         stage1_output = stage1_output.to(DEVICE)
-    _, alpha_vector, _ = encoder_alpha(alpha)
-    _, beta_vector, _ = encoder_beta(beta)
-    if alpha_vector.shape[0] >= 2:
-        # If the tensor has at least two layers, return the second one with an added dimension
-        alpha_vector = alpha_vector[-1].unsqueeze(0)
-    if beta_vector.shape[0] >= 2:
-        # If the tensor has at least two layers, return the second one with an added dimension
-        beta_vector = beta_vector[-1].unsqueeze(0)
+
+    if model_type != "properties":
+        _, alpha_vector, _ = encoder_alpha(alpha)
+        _, beta_vector, _ = encoder_beta(beta)
+        if alpha_vector.shape[0] >= 2:
+            # If the tensor has at least two layers, return the second one with an added dimension
+            alpha_vector = alpha_vector[-1].unsqueeze(0)
+        if beta_vector.shape[0] >= 2:
+            # If the tensor has at least two layers, return the second one with an added dimension
+            beta_vector = beta_vector[-1].unsqueeze(0)
+
+    else:
+        alpha_vector = alpha.unsqueeze(0)
+        beta_vector = beta.unsqueeze(0)
+
     concatenated_a_b = torch.cat((alpha_vector, beta_vector), dim=2)
     concatenated_inputs = torch.cat((concatenated_a_b, va.unsqueeze(0),
                                      vb.unsqueeze(0), ja.unsqueeze(0),
@@ -99,7 +107,7 @@ def pass_models(alpha, beta, alpha_model, beta_model, va, vb, ja, jb, DEVICE, st
     return concatenated_inputs
 
 
-def train_model(model, alpha_input, beta_input, data_loader, test_loader, DEVICE, base_folder,
+def train_model(model, model_type, alpha_input, beta_input, data_loader, test_loader, DEVICE, base_folder,
                 batch_size, acid2int, weight_decay_encoder, weight_decay_cl, losses_weight, lr_encoder, lr_cl, patience=10, min_delta=0.0001):
     """
     Train the model with the given inputs and parameters.
@@ -127,10 +135,11 @@ def train_model(model, alpha_input, beta_input, data_loader, test_loader, DEVICE
     encoder_beta, decoder_beta = beta_input
 
     model_optimizer = optim.AdamW(model.parameters(), lr=lr_cl, weight_decay=weight_decay_cl)
-    encoder_alpha_optimizer = optim.AdamW(encoder_alpha.parameters(), lr=lr_encoder, weight_decay=weight_decay_encoder)
-    encoder_beta_optimizer = optim.AdamW(encoder_beta.parameters(), lr=lr_encoder, weight_decay=weight_decay_encoder)
-    decoder_alpha_optimizer = optim.AdamW(decoder_alpha.parameters(), lr=lr_encoder, weight_decay=weight_decay_encoder)
-    decoder_beta_optimizer = optim.AdamW(decoder_beta.parameters(), lr=lr_encoder, weight_decay=weight_decay_encoder)
+    if model_type != "properties":
+        encoder_alpha_optimizer = optim.AdamW(encoder_alpha.parameters(), lr=lr_encoder, weight_decay=weight_decay_encoder)
+        encoder_beta_optimizer = optim.AdamW(encoder_beta.parameters(), lr=lr_encoder, weight_decay=weight_decay_encoder)
+        decoder_alpha_optimizer = optim.AdamW(decoder_alpha.parameters(), lr=lr_encoder, weight_decay=weight_decay_encoder)
+        decoder_beta_optimizer = optim.AdamW(decoder_beta.parameters(), lr=lr_encoder, weight_decay=weight_decay_encoder)
 
     num_epochs = 200
     train_losses = []
@@ -139,8 +148,9 @@ def train_model(model, alpha_input, beta_input, data_loader, test_loader, DEVICE
     predict_losses = []
     if test_loader is not None:
         test_losses = []
-        test_alpha_losses = []
-        test_beta_losses = []
+        if model_type != "properties":
+            test_alpha_losses = []
+            test_beta_losses = []
         test_predict_losses = []
         best_test_auc = float('-inf')
         epochs_without_improvement = 0
@@ -148,14 +158,15 @@ def train_model(model, alpha_input, beta_input, data_loader, test_loader, DEVICE
     for epoch in range(num_epochs):
         # Training
         model.train()
-        encoder_alpha.train()
-        encoder_beta.train()
-        decoder_alpha.train()
-        decoder_beta.train()
+        if model_type != "properties":
+            encoder_alpha.train()
+            encoder_beta.train()
+            decoder_alpha.train()
+            decoder_beta.train()
+            batch_alpha_losses = []
+            batch_beta_losses = []
 
         batch_train_losses = []
-        batch_alpha_losses = []
-        batch_beta_losses = []
         batch_predict_losses = []
 
         for i, (alpha, beta, va, vb, ja, jb, label, stage1_output) in enumerate(data_loader):
@@ -169,54 +180,64 @@ def train_model(model, alpha_input, beta_input, data_loader, test_loader, DEVICE
             if stage1_output is not None and any(o is not None for o in stage1_output):
                 stage1_output = stage1_output.to(DEVICE)
 
-            encoder_alpha_optimizer.zero_grad()
-            encoder_beta_optimizer.zero_grad()
-            decoder_alpha_optimizer.zero_grad()
-            decoder_beta_optimizer.zero_grad()
+            if model_type != "properties":
+                encoder_alpha_optimizer.zero_grad()
+                encoder_beta_optimizer.zero_grad()
+                decoder_alpha_optimizer.zero_grad()
+                decoder_beta_optimizer.zero_grad()
+                loss_alpha = merge_pass(alpha, encoder_alpha, decoder_alpha, DEVICE, batch_size, acid2int)
+                loss_beta = merge_pass(beta, encoder_beta, decoder_beta, DEVICE, batch_size, acid2int)
             model_optimizer.zero_grad()
-            loss_alpha = merge_pass(alpha, encoder_alpha, decoder_alpha, DEVICE, batch_size, acid2int)
-            loss_beta = merge_pass(beta, encoder_beta, decoder_beta, DEVICE, batch_size, acid2int)
-            concatenated_inputs = pass_models(alpha, beta, encoder_alpha, encoder_beta, va, vb, ja, jb,
+            concatenated_inputs = pass_models(alpha, beta, model_type, encoder_alpha, encoder_beta, va, vb, ja, jb,
                                               DEVICE, stage1_output)
 
             outputs = model(concatenated_inputs)
             predict_loss = criterion(outputs.view(-1), label) * losses_weight
-            loss = predict_loss + loss_alpha + loss_beta
+            if model_type == "properties":
+                loss = predict_loss
+            else:
+                loss = predict_loss + loss_alpha + loss_beta
+                batch_alpha_losses.append(loss_alpha.item())
+                batch_beta_losses.append(loss_beta.item())
             batch_train_losses.append(loss.item())
-            batch_alpha_losses.append(loss_alpha.item())
-            batch_beta_losses.append(loss_beta.item())
             batch_predict_losses.append(predict_loss.item())
             if i % 100 == 0:
-                print(f'Epoch {epoch}, Batch {i}, Alpha Loss: {loss_alpha.item():.4f}, '
-                      f'Beta Loss: {loss_beta.item():.4f}, Predict Loss: {predict_loss.item():.4f}')
+                if model_type != "properties":
+                    print(f'Epoch {epoch}, Batch {i}, Alpha Loss: {loss_alpha.item():.4f}, '
+                          f'Beta Loss: {loss_beta.item():.4f}, Predict Loss: {predict_loss.item():.4f}')
+                else:
+                    print(f'Epoch {epoch}, Batch {i}, Predict Loss: {predict_loss.item():.4f}')
 
             loss.backward()
 
-            encoder_alpha_optimizer.step()
-            encoder_beta_optimizer.step()
-            decoder_alpha_optimizer.step()
-            decoder_beta_optimizer.step()
+            if model_type != "properties":
+                encoder_alpha_optimizer.step()
+                encoder_beta_optimizer.step()
+                decoder_alpha_optimizer.step()
+                decoder_beta_optimizer.step()
             model_optimizer.step()
 
         epoch_train_loss = sum(batch_train_losses) / len(batch_train_losses)
-        epoch_alpha_loss = sum(batch_alpha_losses) / len(batch_alpha_losses)
-        epoch_beta_loss = sum(batch_beta_losses) / len(batch_beta_losses)
+        if model_type != "properties":
+            epoch_alpha_loss = sum(batch_alpha_losses) / len(batch_alpha_losses)
+            epoch_beta_loss = sum(batch_beta_losses) / len(batch_beta_losses)
+            alpha_losses.append(epoch_alpha_loss)
+            beta_losses.append(epoch_beta_loss)
         epoch_predict_loss = sum(batch_predict_losses) / len(batch_predict_losses)
         train_losses.append(epoch_train_loss)
-        alpha_losses.append(epoch_alpha_loss)
-        beta_losses.append(epoch_beta_loss)
         predict_losses.append(epoch_predict_loss)
 
         if test_loader is not None:
             # Testing
             model.eval()
-            encoder_alpha.eval()
-            encoder_beta.eval()
-            decoder_alpha.eval()
-            decoder_beta.eval()
+            if model_type != "properties":
+                encoder_alpha.eval()
+                encoder_beta.eval()
+                decoder_alpha.eval()
+                decoder_beta.eval()
+                batch_test_alpha_losses = []
+                batch_test_beta_losses = []
             batch_test_losses = []
-            batch_test_alpha_losses = []
-            batch_test_beta_losses = []
             batch_test_predict_losses = []
             all_probs = []
             all_labels = []
@@ -230,14 +251,18 @@ def train_model(model, alpha_input, beta_input, data_loader, test_loader, DEVICE
                     vb = vb.to(DEVICE)
                     ja = ja.to(DEVICE)
                     jb = jb.to(DEVICE)
-                    loss_alpha = merge_pass(alpha, encoder_alpha, decoder_alpha, DEVICE, batch_size, acid2int)
-                    loss_beta = merge_pass(beta, encoder_beta, decoder_beta, DEVICE, batch_size, acid2int)
-                    concatenated_inputs = pass_models(alpha, beta, encoder_alpha, encoder_beta, va, vb, ja,
+                    if model_type != "properties":
+                        loss_alpha = merge_pass(alpha, encoder_alpha, decoder_alpha, DEVICE, batch_size, acid2int)
+                        loss_beta = merge_pass(beta, encoder_beta, decoder_beta, DEVICE, batch_size, acid2int)
+                    concatenated_inputs = pass_models(alpha, beta, model_type, encoder_alpha, encoder_beta, va, vb, ja,
                                                       jb, DEVICE, stage1)
 
                     outputs = model(concatenated_inputs)
                     predict_loss = criterion(outputs.view(-1), label) * losses_weight
-                    loss = predict_loss + loss_alpha + loss_beta
+                    if model_type == "properties":
+                        loss = predict_loss
+                    else:
+                        loss = predict_loss + loss_alpha + loss_beta
 
                     # Collect logits for AUC
                     probs = torch.sigmoid(outputs).view(-1).detach().cpu().numpy()
@@ -246,18 +271,20 @@ def train_model(model, alpha_input, beta_input, data_loader, test_loader, DEVICE
                     all_labels.extend(labs)
 
                     batch_test_losses.append(loss.item())
-                    batch_test_alpha_losses.append(loss_alpha.item())
-                    batch_test_beta_losses.append(loss_beta.item())
+                    if model_type != "properties":
+                        batch_test_alpha_losses.append(loss_alpha.item())
+                        batch_test_beta_losses.append(loss_beta.item())
                     batch_test_predict_losses.append(predict_loss.item())
 
             epoch_test_loss = sum(batch_test_losses) / len(batch_test_losses)
             epoch_test_auc = roc_auc_score(all_labels, all_probs)
-            epoch_test_alpha_loss = sum(batch_test_alpha_losses) / len(batch_test_alpha_losses)
-            epoch_test_beta_loss = sum(batch_test_beta_losses) / len(batch_test_beta_losses)
+            if model_type != "properties":
+                epoch_test_alpha_loss = sum(batch_test_alpha_losses) / len(batch_test_alpha_losses)
+                epoch_test_beta_loss = sum(batch_test_beta_losses) / len(batch_test_beta_losses)
+                test_alpha_losses.append(epoch_test_alpha_loss)
+                test_beta_losses.append(epoch_test_beta_loss)
             epoch_test_predict_loss = sum(batch_test_predict_losses) / len(batch_test_predict_losses)
             test_losses.append(epoch_test_loss)
-            test_alpha_losses.append(epoch_test_alpha_loss)
-            test_beta_losses.append(epoch_test_beta_loss)
             test_predict_losses.append(epoch_test_predict_loss)
             print(f'Epoch [{epoch + 1}/{num_epochs}], Train Loss: {epoch_train_loss}, Test Loss: {epoch_test_loss},'
                   f'Test AUC: {epoch_test_auc:.4f}')
@@ -276,18 +303,19 @@ def train_model(model, alpha_input, beta_input, data_loader, test_loader, DEVICE
 
         else:
             print(f'Epoch [{epoch + 1}/{num_epochs}], Train Loss: {epoch_train_loss}')
-            print(f'Epoch {epoch + 1}, Alpha Loss: {epoch_alpha_loss:.4f}, '
-                  f'Beta Loss: {epoch_beta_loss:.4f}, Predict Loss: {epoch_predict_loss:.4f}')
+            if model_type != "properties":
+                print(f'Epoch {epoch + 1}, Alpha Loss: {epoch_alpha_loss:.4f}, '
+                      f'Beta Loss: {epoch_beta_loss:.4f}, Predict Loss: {epoch_predict_loss:.4f}')
 
     # Plotting the loss after training
     plt.figure(figsize=(10, 5))
     plt.plot(train_losses, label="Training Loss")
     if test_loader is not None:
-        plt.plot(test_losses, label="Test Loss")
+        plt.plot(test_losses, label="Validation Loss")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.yscale("log")
-    plt.title("Training and Test Loss Over Epochs")
+    # plt.title("Training and Test Loss Over Epochs")
     plt.legend()
     save_plot_with_incremental_filename(base_folder, 'loss_plot.png')
 
@@ -296,13 +324,14 @@ def train_model(model, alpha_input, beta_input, data_loader, test_loader, DEVICE
     plt.plot(beta_losses, label="Beta Loss")
     plt.plot(predict_losses, label="Predict Loss")
     if test_loader is not None:
-        plt.plot(test_alpha_losses, label="Alpha test Loss")
-        plt.plot(test_beta_losses, label="Beta test Loss")
-        plt.plot(test_predict_losses, label="Predict test Loss")
+        if model_type != "properties":
+            plt.plot(test_alpha_losses, label="Alpha test Loss")
+            plt.plot(test_beta_losses, label="Beta test Loss")
+        plt.plot(test_predict_losses, label="Predict Validation Loss")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.yscale("log")
-    plt.title("Training and Test Loss Over Epochs")
+    # plt.title("Training and Test Loss Over Epochs")
     plt.legend()
     save_plot_with_incremental_filename(base_folder, 'new_plot_parts.png')
 
@@ -499,11 +528,11 @@ def train_model_bert(tokenizer, tcrbert, model, data_loader, test_loader, ix_2_a
     plt.figure(figsize=(10, 5))
     plt.plot(train_losses, label="Training Loss")
     if test_loader is not None:
-        plt.plot(test_losses, label="Test Loss")
+        plt.plot(test_losses, label="Validation Loss")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.yscale("log")
-    plt.title("Training and Test Loss Over Epochs")
+    # plt.title("Training and Test Loss Over Epochs")
     plt.legend()
     save_plot_with_incremental_filename(base_folder, 'loss_plot.png')
 
@@ -554,3 +583,12 @@ def encode_tcr_bert(tokenizer, tcrbert, sequence):
     outputs = tcrbert(**inputs)
     vector = outputs.pooler_output
     return vector.unsqueeze(0)
+
+
+def get_properties(sequence):
+    """Calculate properties of the given protein sequence."""
+    analysis = ProteinAnalysis(sequence)
+    weight = analysis.molecular_weight()
+    isoelectric_point = analysis.isoelectric_point()
+    hydrophobicity = analysis.gravy()  # Grand average of hydrophobicity
+    return weight, isoelectric_point, hydrophobicity

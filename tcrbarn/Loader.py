@@ -18,8 +18,12 @@ class ChainClassificationDataset(Dataset):
         data (list): List of data samples.
         vj_data (tuple): Tuple containing dictionaries for V and J gene encodings.
     """
-    def __init__(self, data, vj_data):
+    def __init__(self, data, vj_data, model_type="properties"):
         self.data = data
+        self.mean = None
+        self.std  = None
+        self.model_type = model_type
+
         amino_acids = ['A', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L', 'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'V', 'W',
                        'Y']
         # Special tokens
@@ -41,6 +45,10 @@ class ChainClassificationDataset(Dataset):
         self.num_vb = len(vb_dict)
         self.num_ja = len(ja_dict)
         self.num_jb = len(jb_dict)
+
+    def set_norm(self, mean, std):
+        self.mean = mean
+        self.std = std
 
     def __len__(self):
         return len(self.data)
@@ -70,11 +78,22 @@ class ChainClassificationDataset(Dataset):
         chain1, chain2 = chain_pair
         if label is not None:
             label = float(label)
-        # Convert amino acid sequences to tensors
-        alpha_tensor = torch.tensor([self.acid_2_ix[acid] for acid in chain1] + [self.acid_2_ix["<EOS>"]],
-                                    dtype=torch.long)
-        beta_tensor = torch.tensor([self.acid_2_ix[acid] for acid in chain2] + [self.acid_2_ix["<EOS>"]],
-                                   dtype=torch.long)
+        if self.model_type == "properties":
+            if self.mean is not None:
+                # chain1 = first 4 features (alpha)
+                alpha_tensor = (chain1 - self.mean[:4]) / self.std[:4]
+
+                # chain2 = last 4 features (beta)
+                beta_tensor = (chain2 - self.mean[4:]) / self.std[4:]
+            else:
+                alpha_tensor = chain1
+                beta_tensor = chain2
+        else:
+            # Convert amino acid sequences to tensors
+            alpha_tensor = torch.tensor([self.acid_2_ix[acid] for acid in chain1] + [self.acid_2_ix["<EOS>"]],
+                                        dtype=torch.long)
+            beta_tensor = torch.tensor([self.acid_2_ix[acid] for acid in chain2] + [self.acid_2_ix["<EOS>"]],
+                                       dtype=torch.long)
         # One-hot encode V and J genes
         va, vb, ja, jb = vj
         va_one_hot = torch.zeros(self.num_va)
@@ -89,33 +108,37 @@ class ChainClassificationDataset(Dataset):
         return alpha_tensor, beta_tensor, va_one_hot, vb_one_hot, ja_one_hot, jb_one_hot, label, output
 
 
-def collate_fn(batch):
-    """
-    Collate function to combine samples into a batch.
-    Args:
-        batch (list): List of samples.
-    Returns:
-        tuple: Batched tensors for input sequences, V and J gene encodings, labels, and outputs.
-    """
-    chain1_batch, chain2_batch, va_one_hot, vb_one_hot, ja_one_hot, jb_one_hot, label_batch, output = zip(*batch)
-    # Pad input chains
-    input_tensor1_padded = pad_sequence(chain1_batch, batch_first=True, padding_value=0)
-    input_tensor2_padded = pad_sequence(chain2_batch, batch_first=True, padding_value=0)
-    # Stack one-hot encoded tensors into a batch
-    va_one_hot_tensor = torch.stack(va_one_hot)
-    vb_one_hot_tensor = torch.stack(vb_one_hot)
-    ja_one_hot_tensor = torch.stack(ja_one_hot)
-    jb_one_hot_tensor = torch.stack(jb_one_hot)
-    if label_batch is not None and any(o is not None for o in label_batch):
-        label_batch = torch.tensor(label_batch, dtype=torch.float)
-    if output is not None and any(o is not None for o in output):
-        output = torch.tensor(output, dtype=torch.float)
-    return (input_tensor1_padded, input_tensor2_padded, va_one_hot_tensor, vb_one_hot_tensor, ja_one_hot_tensor,
-            jb_one_hot_tensor, label_batch, output)
+    def collate_fn(self, batch):
+        """
+        Collate function to combine samples into a batch.
+        Args:
+            batch (list): List of samples.
+        Returns:
+            tuple: Batched tensors for input sequences, V and J gene encodings, labels, and outputs.
+        """
+        chain1_batch, chain2_batch, va_one_hot, vb_one_hot, ja_one_hot, jb_one_hot, label_batch, output = zip(*batch)
+        # Pad input chains
+        if self.model_type == "properties":
+            chain1_batch = torch.stack(chain1_batch)  # [B, 4]
+            chain2_batch = torch.stack(chain2_batch)  # [B, 4]
+        else:
+            chain1_batch = pad_sequence(chain1_batch, batch_first=True, padding_value=0)
+            chain2_batch = pad_sequence(chain2_batch, batch_first=True, padding_value=0)
+        # Stack one-hot encoded tensors into a batch
+        va_one_hot_tensor = torch.stack(va_one_hot)
+        vb_one_hot_tensor = torch.stack(vb_one_hot)
+        ja_one_hot_tensor = torch.stack(ja_one_hot)
+        jb_one_hot_tensor = torch.stack(jb_one_hot)
+        if label_batch is not None and any(o is not None for o in label_batch):
+            label_batch = torch.tensor(label_batch, dtype=torch.float)
+        if output is not None and any(o is not None for o in output):
+            output = torch.tensor(output, dtype=torch.float)
+        return (chain1_batch, chain2_batch, va_one_hot_tensor, vb_one_hot_tensor, ja_one_hot_tensor,
+                jb_one_hot_tensor, label_batch, output)
 
 
 def read_data(file_path, chain1_column='tcra', chain2_column='tcrb', va_c='va', vb_c="vb", ja_c="ja", jb_c="jb",
-              label_column='sign'):
+              label_column='sign', model_type="properties"):
     """
     Read data from a CSV file and format it for the dataset.
     Args:
@@ -131,15 +154,27 @@ def read_data(file_path, chain1_column='tcra', chain2_column='tcrb', va_c='va', 
         list: List of formatted data samples.
     """
     df = pd.read_csv(file_path)
-    if df.shape[1] == 7:
+    if df.shape[1] == 7 or df.shape[1] == 15:
         output_col = False  # Default if `output` column is not present
     else:
         output_col = True
     # Extract chains and label from each row
     data = []
     for _, row in df.iterrows():
-        chain1 = row[chain1_column]
-        chain2 = row[chain2_column]
+        if model_type == "properties":
+            properties_cols = ["alpha_len", "alpha_w", "alpha_pI", "alpha_hydro",
+                        "beta_len", "beta_w", "beta_pI", "beta_hydro"]
+            chain1 = torch.tensor(
+                row[properties_cols[:4]].to_numpy(dtype=float),
+                dtype=torch.float
+            )
+            chain2 = torch.tensor(
+                row[properties_cols[4:]].to_numpy(dtype=float),
+                dtype=torch.float
+            )
+        else:
+            chain1 = row[chain1_column]
+            chain2 = row[chain2_column]
         label = row[label_column]
         va = v_j.v_j_format(row[va_c], 1, "TRAV")
         vb = v_j.v_j_format(row[vb_c], 1, "TRBV")

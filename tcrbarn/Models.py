@@ -28,6 +28,7 @@ class EncoderLstm(nn.Module):
         direction = 2 if self.bidirectional else 1
         self.fc_mean = nn.Linear(hidden_size * 2 * direction, latent_size)
         self.fc_logvar = nn.Linear(hidden_size * 2 * direction, latent_size)
+        # self.fc_latent = nn.Linear(hidden_size * 2 * direction, latent_size) # For AE
 
     def forward(self, x):
         """
@@ -57,6 +58,8 @@ class EncoderLstm(nn.Module):
         mean = self.fc_mean(concatenated_states)
         log_var = self.fc_logvar(concatenated_states)
         return outputs, mean, log_var
+        # latent = self.fc_latent(concatenated_states)
+        # return outputs, latent  # For AE
 
 
 class DecoderLstm(nn.Module):
@@ -144,10 +147,8 @@ class FFNN(nn.Module):
         dropout_prob_cl (float, optional): Dropout probability. Default is 0.
         norm_cl (bool, optional): Whether to apply batch normalization. Default is False.
     """
-    def __init__(self, input_dim, dropout_prob_cl=0, norm_cl=False):
+    def __init__(self, input_dim, dropout_prob_cl=0, norm_cl=False, h1 = 256, h2 = 64):
         super(FFNN, self).__init__()
-        h1 = 256
-        h2 = 64
         self.fc1 = nn.Linear(input_dim, h1)
         self.fc2 = nn.Linear(h1, h2)
         self.fc3 = nn.Linear(h2, 1)
@@ -162,4 +163,20 @@ class FFNN(nn.Module):
         x = torch.relu(self.norm2(self.fc2(x)))
         x = self.dropout(x)
         x = self.fc3(x)
+        return x
+
+class LogisticRegression(nn.Module):
+    """
+    Logistic Regression model..
+
+    Args:
+        input_dim (int): Dimension of the input features.
+    """
+    def __init__(self, input_dim):
+        super(LogisticRegression, self).__init__()
+        self.fc = nn.Linear(input_dim, 1)
+
+    def forward(self, x):
+        x = x[-1]
+        x = self.fc(x)
         return x
