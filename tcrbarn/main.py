@@ -50,7 +50,7 @@ def save_properties_to_file(input_file, output_file):
 
     # Prepare new columns
     new_cols = ["alpha_len", "alpha_w", "alpha_pI", "alpha_hydro",
-                "beta_len",  "beta_w",  "beta_pI",  "beta_hydro"]
+                "beta_len", "beta_w", "beta_pI", "beta_hydro"]
     new_values = []
 
     for idx, row in df.iterrows():
@@ -59,7 +59,7 @@ def save_properties_to_file(input_file, output_file):
 
         # lengths
         alpha_len = len(alpha_seq)
-        beta_len  = len(beta_seq)
+        beta_len = len(beta_seq)
 
         # biochemical properties
         aw, apI, ah = Trainer.get_properties(alpha_seq)
@@ -101,7 +101,6 @@ def compute_stats(pairs):
     std = X.std(dim=0) + 1e-8
 
     return mean, std
-
 
 
 def process_data_with_k_fold(file_path, batch_size, k=5, model_type="properties"):
@@ -185,12 +184,13 @@ def train_models(vocab_size, hyperparameters, batch_size, acid_2_ix, train_data_
         embed_size, hidden_size, num_layers, latent_size, weight_decay_encoder, dropout_prob, layer_norm,
         nhead, dim_feedforward, weight_decay_cl, dropout_prob_cl, norm_cl, losses_weight, lr_encoder,
         lr_cl, h1, h2
-     ) = hyperparameters
+    ) = hyperparameters
     # Initialize the models
     if model_type == "BERT":
         model = Models.FFNN(768 * 2 + len_one_hot, dropout_prob_cl, norm_cl)
         model.to(DEVICE)
-        Trainer.train_model_bert(tokenizer, tcrbert, model, train_data_loader, test_data_loader, ix_2_acid, DEVICE, base_folder, weight_decay_cl, lr_cl)
+        Trainer.train_model_bert(tokenizer, tcrbert, model, train_data_loader, test_data_loader, ix_2_acid, DEVICE,
+                                 base_folder, weight_decay_cl, lr_cl)
         return model, (None, None), (None, None)
     if model_type == "properties":
         model = Models.FFNN(8 + len_one_hot, dropout_prob_cl, norm_cl, h1, h2)
@@ -224,7 +224,7 @@ def train_models(vocab_size, hyperparameters, batch_size, acid_2_ix, train_data_
         beta_decoder.to(DEVICE)
     model.to(DEVICE)
 
-    Trainer.train_model(model, model_type,(alpha_encoder, alpha_decoder),
+    Trainer.train_model(model, model_type, (alpha_encoder, alpha_decoder),
                         (beta_encoder, beta_decoder), train_data_loader, test_data_loader, DEVICE,
                         base_folder, batch_size, acid_2_ix, weight_decay_encoder, weight_decay_cl, losses_weight,
                         lr_encoder, lr_cl)
@@ -259,7 +259,7 @@ def evaluate_model(model, encoders, data_loader, model_type):
     all_vb = []
     all_ja = []
     all_jb = []
-    with torch.no_grad():
+    with (torch.no_grad()):
         for alpha, beta, va_one_hot, vb_one_hot, ja_one_hot, jb_one_hot, labels, stage1 in data_loader:
             labels = labels.to(DEVICE)
             va_one_hot = va_one_hot.to(DEVICE)
@@ -348,69 +348,70 @@ def evaluate_model(model, encoders, data_loader, model_type):
     return (auc, all_labels, all_predicted_probs, all_alpha, all_beta, top_alpha_positives, top_beta_positives,
             bottom_alpha_negatives, bottom_beta_negatives)
 
-def evaluate_model_bert(model, data_loader, tokenizer, tcrbert, ix_2_acid):
-        """
-        Evaluate the model on the given data loader.
-        Args:
-            model (nn.Module): The model to evaluate.
-            data_loader (DataLoader): DataLoader for the evaluation data.
-            tokenizer: A pretrained HuggingFace tokenizer (AutoTokenizer) used to
-            convert CDR3 sequences into token IDs suitable for the TCR-BERT model.
-            tcrbert: A pretrained HuggingFace model (AutoModel) loaded from the
-            specified checkpoint, used to generate contextual embeddings for the
-            input CDR3 sequences.
-            ix_2_acid (dict): Dictionary mapping indices to amino acid.
-        Returns:
-            tuple: AUC score, all labels, all predicted probabilities, alpha sequences, beta sequences,
-                   top positive alpha sequences, top positive beta sequences, bottom negative alpha sequences,
-                   bottom negative beta sequences.
-        """
-        correct = 0
-        total = 0
-        model.eval()
-        all_labels = []
-        all_predicted_probs = []
-        with torch.no_grad():
-            for alpha, beta, va_one_hot, vb_one_hot, ja_one_hot, jb_one_hot, labels, stage1 in data_loader:
-                labels = labels.to(DEVICE)
-                va_one_hot = va_one_hot.to(DEVICE)
-                vb_one_hot = vb_one_hot.to(DEVICE)
-                ja_one_hot = ja_one_hot.to(DEVICE)
-                jb_one_hot = jb_one_hot.to(DEVICE)
-                decoded_alpha = []
-                for seq_tensor in alpha:
-                    seq = seq_tensor.tolist()
-                    decoded = "".join(ix_2_acid[i] for i in seq if ix_2_acid[i] not in ["<EOS>", "<PAD>"])
-                    decoded_alpha.append(decoded)
-                decoded_beta = []
-                for seq_tensor in beta:
-                    seq = seq_tensor.tolist()
-                    decoded = "".join(ix_2_acid[i] for i in seq if ix_2_acid[i] not in ["<EOS>", "<PAD>"])
-                    decoded_beta.append(decoded)
-                concatenated_inputs = Trainer.pass_models_bert(tokenizer, tcrbert, decoded_alpha, decoded_beta,
-                                                               va_one_hot, vb_one_hot, ja_one_hot, jb_one_hot, DEVICE,
-                                                               stage1)
-                # Get model outputs and predictions
-                outputs = model(concatenated_inputs)
-                predicted_probabilities = torch.sigmoid(outputs)
-                predicted = (predicted_probabilities >= 0.5).squeeze(-1).int()
-                add = (predicted == labels).sum().item()
-                total += len(predicted)
-                correct += add
-                # Convert labels and predictions to numpy arrays
-                labels = labels.cpu().numpy() if labels.is_cuda else labels.numpy()
-                if predicted_probabilities.is_cuda:
-                    predicted_probabilities = predicted_probabilities.cpu().numpy()
-                else:
-                    predicted_probabilities = predicted_probabilities.numpy()
-                # Append the true labels and predicted probabilities to the lists
-                all_labels.extend(labels)
-                all_predicted_probs.extend(predicted_probabilities.squeeze(-1))
-        # Calculate AUC
-        auc = roc_auc_score(all_labels, all_predicted_probs)
-        print(f'AUC: {auc}')
 
-        return auc, all_labels, all_predicted_probs
+def evaluate_model_bert(model, data_loader, tokenizer, tcrbert, ix_2_acid):
+    """
+    Evaluate the model on the given data loader.
+    Args:
+        model (nn.Module): The model to evaluate.
+        data_loader (DataLoader): DataLoader for the evaluation data.
+        tokenizer: A pretrained HuggingFace tokenizer (AutoTokenizer) used to
+        convert CDR3 sequences into token IDs suitable for the TCR-BERT model.
+        tcrbert: A pretrained HuggingFace model (AutoModel) loaded from the
+        specified checkpoint, used to generate contextual embeddings for the
+        input CDR3 sequences.
+        ix_2_acid (dict): Dictionary mapping indices to amino acid.
+    Returns:
+        tuple: AUC score, all labels, all predicted probabilities, alpha sequences, beta sequences,
+               top positive alpha sequences, top positive beta sequences, bottom negative alpha sequences,
+               bottom negative beta sequences.
+    """
+    correct = 0
+    total = 0
+    model.eval()
+    all_labels = []
+    all_predicted_probs = []
+    with torch.no_grad():
+        for alpha, beta, va_one_hot, vb_one_hot, ja_one_hot, jb_one_hot, labels, stage1 in data_loader:
+            labels = labels.to(DEVICE)
+            va_one_hot = va_one_hot.to(DEVICE)
+            vb_one_hot = vb_one_hot.to(DEVICE)
+            ja_one_hot = ja_one_hot.to(DEVICE)
+            jb_one_hot = jb_one_hot.to(DEVICE)
+            decoded_alpha = []
+            for seq_tensor in alpha:
+                seq = seq_tensor.tolist()
+                decoded = "".join(ix_2_acid[i] for i in seq if ix_2_acid[i] not in ["<EOS>", "<PAD>"])
+                decoded_alpha.append(decoded)
+            decoded_beta = []
+            for seq_tensor in beta:
+                seq = seq_tensor.tolist()
+                decoded = "".join(ix_2_acid[i] for i in seq if ix_2_acid[i] not in ["<EOS>", "<PAD>"])
+                decoded_beta.append(decoded)
+            concatenated_inputs = Trainer.pass_models_bert(tokenizer, tcrbert, decoded_alpha, decoded_beta,
+                                                           va_one_hot, vb_one_hot, ja_one_hot, jb_one_hot, DEVICE,
+                                                           stage1)
+            # Get model outputs and predictions
+            outputs = model(concatenated_inputs)
+            predicted_probabilities = torch.sigmoid(outputs)
+            predicted = (predicted_probabilities >= 0.5).squeeze(-1).int()
+            add = (predicted == labels).sum().item()
+            total += len(predicted)
+            correct += add
+            # Convert labels and predictions to numpy arrays
+            labels = labels.cpu().numpy() if labels.is_cuda else labels.numpy()
+            if predicted_probabilities.is_cuda:
+                predicted_probabilities = predicted_probabilities.cpu().numpy()
+            else:
+                predicted_probabilities = predicted_probabilities.numpy()
+            # Append the true labels and predicted probabilities to the lists
+            all_labels.extend(labels)
+            all_predicted_probs.extend(predicted_probabilities.squeeze(-1))
+    # Calculate AUC
+    auc = roc_auc_score(all_labels, all_predicted_probs)
+    print(f'AUC: {auc}')
+
+    return auc, all_labels, all_predicted_probs
 
 
 def plot_auc(all_labels, all_predicted_probs, all_labels2=None, all_predicted_probs2=None, ax=None, text=None,
@@ -553,7 +554,6 @@ def objective(trial, file_path, model_type):
         losses_weight = trial.suggest_int('losses_weight', 10, 80)
         embed_size = trial.suggest_categorical('embed_size', [64, 128, 256])
 
-
         encoder_type = "LSTM"
         if encoder_type == "LSTM" or encoder_type == "BiLSTM":
             nhead = None
@@ -664,7 +664,6 @@ def run_optuna(input_file, hyperparameters_file_path, model_type, initial_hyperp
     """
     study = optuna.create_study(direction='maximize', sampler=optuna.samplers.TPESampler(seed=SEED))
 
-
     # Try to load initial seed hyperparameters from file
     if initial_hyperparameters is not None:
         try:
@@ -712,9 +711,8 @@ def run_optuna(input_file, hyperparameters_file_path, model_type, initial_hyperp
         return objective(trial, input_file, model_type)
         # return trees.objective_lightgbm(trial, X, y) # For XGBoost and LightGBM
 
-
     study.optimize(wrapped_objective, n_trials=200,
-                   callbacks=[lambda study, trial:save_best_params(study, trial, hyperparameters_file_path)])
+                   callbacks=[lambda study, trial: save_best_params(study, trial, hyperparameters_file_path)])
 
     # Print best hyperparameters and their result
     print("Best trial:")
@@ -761,7 +759,7 @@ def find_best_model(file_path, best_params_file, model_type):
     else:
         losses_weight = 1
         (embed_size, hidden_size, num_layers, latent_size, weight_decay_encoder, dropout_prob_en, layer_norm,
-        lr_encoder) = None, None, None, None, None, None,  None, None
+         lr_encoder) = None, None, None, None, None, None, None, None
         h1 = 256
         h2 = 64
     weight_decay_cl = best_params.get('weight_decay_cl', None)
@@ -906,8 +904,8 @@ def load_models(model_save_paths, len_one_hot, vocab_size, best_params_file, mod
 
     # Load the main model
     if model_type == "properties":
-        h1 = 256 #best_params['h1']
-        h2 = 64 # best_params['h2']
+        h1 = 256  # best_params['h1']
+        h2 = 64  # best_params['h2']
         main_model = Models.FFNN(8 + len_one_hot, dropout_prob_cl, norm_cl, h1, h2).to(DEVICE)
     else:
         main_model = Models.FFNN(latent_size * 2 + len_one_hot, dropout_prob_cl, norm_cl).to(DEVICE)
@@ -971,7 +969,8 @@ def load_data(file_path, model_type, mean=None, std=None):
     return full_dataset, full_data_loader, pairs, len_one_hot
 
 
-def load_and_evaluate_model(file_path, param_file, model_type, type_model="pMHC", model_save_paths=None, mean=None, std=None):
+def load_and_evaluate_model(file_path, param_file, model_type, type_model="pMHC", model_save_paths=None, mean=None,
+                            std=None):
     """
     Load and evaluate the model on the given dataset.
     Args:
@@ -1020,7 +1019,7 @@ def load_and_evaluate_model(file_path, param_file, model_type, type_model="pMHC"
     else:
         if model_type == "properties":
             model = load_models(model_save_paths, len_one_hot, vocab_size, param_file,
-                                                             model_type)
+                                model_type)
             alpha_encoder, beta_encoder = None, None
         else:
             model, alpha_encoder, beta_encoder = load_models(model_save_paths, len_one_hot, vocab_size, param_file,
@@ -1066,8 +1065,9 @@ def run_on_all_save_models(param_file, dataset_file, paths_for_best_models):
     dim_feedforward = best_params.get('dim_feedforward', None)
 
     # Prepare the hyperparameter tuple
-    hyperparameter = (embed_size, hidden_size, num_layers, latent_size, weight_decay_encoder, dropout_prob_en, layer_norm,
-                      nhead, dim_feedforward, weight_decay_cl, dropout_prob_cl, norm_cl, losses_weight, lr_encoder, lr_cl)
+    hyperparameter = (
+    embed_size, hidden_size, num_layers, latent_size, weight_decay_encoder, dropout_prob_en, layer_norm,
+    nhead, dim_feedforward, weight_decay_cl, dropout_prob_cl, norm_cl, losses_weight, lr_encoder, lr_cl)
 
     batch_size = 64
     pairs = Loader.read_data(dataset_file)
@@ -1119,6 +1119,23 @@ def filter_test(train_file, test_file, new_path):
     df_filtered.to_csv(new_path, index=False)
 
 
+def filter_test_v(train_file, test_file, new_path):
+    df_test = pd.read_csv(test_file)
+    df_train = pd.read_csv(train_file)
+    print(len(df_train), len(df_test))
+
+    # Create a set of (va, vb) pairs from train
+    train_pairs = set(zip(df_train['va'], df_train['vb']))
+
+    # Keep only rows in test where (va, vb) NOT in train
+    df_filtered = df_test[
+        ~df_test[['va', 'vb']].apply(tuple, axis=1).isin(train_pairs)
+    ]
+    print(len(df_filtered))
+
+    df_filtered.to_csv(new_path, index=False)
+
+
 def predict(input_pair, model_of="pMHC"):
     """
     Predict the probability for a given input pair using the specified model.
@@ -1129,12 +1146,14 @@ def predict(input_pair, model_of="pMHC"):
         Tensor: Predicted probability.
     """
     if model_of == "pMHC":
-        model_save_paths = {'model': "models/pMHC-final_model/best_model.pth", 'alpha_encoder': "models/pMHC-final_model/best_alpha_encoder.pth",
+        model_save_paths = {'model': "models/pMHC-final_model/best_model.pth",
+                            'alpha_encoder': "models/pMHC-final_model/best_alpha_encoder.pth",
                             'beta_encoder': "models/pMHC-final_model/best_beta_encoder.pth"}
         best_param = "hyperparameters.json"
 
     else:
-        model_save_paths = {'model': "models/non-paired/best_model.pth", 'alpha_encoder': "models/non-paired/best_alpha_encoder.pth",
+        model_save_paths = {'model': "models/non-paired/best_model.pth",
+                            'alpha_encoder': "models/non-paired/best_alpha_encoder.pth",
                             'beta_encoder': "models/non-paired/best_beta_encoder.pth"}
         best_param = "hyperparameters.json"
     va_counts, vb_counts, ja_counts, jb_counts = read_dictionaries_from_file('filtered_counters.json')
@@ -1258,6 +1277,103 @@ def combine_and_shuffle_csv(file1, file2, output_file, seed=42):
     # Save result
     df.to_csv(output_file, index=False)
     print(f"Combined and shuffled file saved to: {output_file}")
+
+
+def to_triplet(sample):
+    (cdr3_a, cdr3_b), (va, vb, ja, jb), *_ = sample
+
+    # normalize CDR3
+    if isinstance(cdr3_a, str):
+        cdr3_a = cdr3_a.strip()
+        cdr3_b = cdr3_b.strip()
+    else:
+        cdr3_a = tuple(cdr3_a.tolist())
+        cdr3_b = tuple(cdr3_b.tolist())
+
+    alpha = (cdr3_a, va, ja)
+    beta = (cdr3_b, vb, jb)
+
+    return alpha, beta
+
+
+def extract_triplet_counts(data):
+    alpha = Counter()
+    beta = Counter()
+
+    for s in data:
+        a, b = to_triplet(s)
+        alpha[a] += 1
+        beta[b] += 1
+
+    return alpha, beta
+
+
+def plot_top_triplets(c1, c2, total1, total2, title, ax, show_legend=False, topk=20):
+    keys = set(c1) | set(c2)
+
+    # sort by normalized sum (correct)
+    keys = sorted(
+        keys,
+        key=lambda k: c1.get(k, 0) + c2.get(k, 0),
+        reverse=True
+    )[:topk]
+
+    total = total1 + total2
+
+    v1 = np.array([c1.get(k, 0) for k in keys], dtype=float)
+    v2 = np.array([c2.get(k, 0) for k in keys], dtype=float)
+
+    # normalize by combined dataset size
+    v1 = v1 / total
+    v2 = v2 / total
+
+    x = np.arange(len(keys))
+
+    # stacked bars
+    ax.bar(x, v1, label="pMHC1")
+    ax.bar(x, v2, bottom=v1, label="pMHC2")
+
+    ax.set_title(title)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        [f"{k[1]}|{k[2]}|{k[0]}" for k in keys],
+        rotation=45,
+        ha='right',
+        fontsize=8
+    )
+
+    if show_legend:
+        ax.legend()
+
+
+def plot_top_triplets_from_files(file1, file2):
+    data1 = Loader.read_data(file1, model_type="sequence")
+    data2 = Loader.read_data(file2, model_type="sequence")
+    a1, b1 = extract_triplet_counts(data1)
+    a2, b2 = extract_triplet_counts(data2)
+    total1 = len(data1)
+    total2 = len(data2)
+
+    fig, axes = plt.subplots(1, 2, figsize=(18, 6))
+
+    plot_top_triplets(
+        a1, a2, total1, total2,
+        "Alpha triplet (CDR3α, Vα, Jα)",
+        axes[0],
+        show_legend=True  # legend only here
+    )
+
+    plot_top_triplets(
+        b1, b2, total1, total2,
+        "Beta triplet (CDR3β, Vβ, Jβ)",
+        axes[1],
+        show_legend=False
+    )
+
+    plt.tight_layout()
+    plt.savefig("20_top_triplets.pdf")
+    plt.show()
 
 
 if __name__ == "__main__":
